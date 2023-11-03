@@ -1,0 +1,88 @@
+#!/bin/bash
+
+#SMTP configuration details
+
+SMTP_HOST="email-smtp.ap-south-1.amazonaws.com"
+SMTP_PORT="587"
+SMTP_USER="AKIAYG3FSDCDFGBU26U"
+SMTP_PASS="BJhAsPM230IMsgVFDVDFVDFl9/oSXsdcdpmhABGH"
+
+# Set your email details
+FROM="no-reply@xtechno.com"
+
+# List of recipients
+TO=("s.lakmal@xgroup.com")
+
+LOG_FILE="/u01/logfile.log"
+
+# Flag to track whether job status email has been sent
+JOB_STATUS_EMAIL_SENT=false
+
+while true; do
+    # Check pgagent status
+    PGAGENT_STATUS=$(systemctl is-active edb-pgagent-14.service)
+
+    if [ "$PGAGENT_STATUS" != "active" ]; then
+        # Start pgagent
+        systemctl start edb-pgagent-14.service
+
+        # Send email notifications to multiple users
+        SUBJECT="pgagent Status Alert"
+        BODY="pgagent was inactive and has been started!
+Check logs for further details (/var/log/edb/pgagent14/pgagent.log)."
+
+        for recipient in "${TO[@]}"; do
+  	/bin/sendemail \
+        -f "$FROM" \
+        -u "$SUBJECT" \
+        -t "$recipient" \
+        -s "${SMTP_HOST}:${SMTP_PORT}" \
+        -o tls=yes \
+        -xu "$SMTP_USER" \
+        -xp "$SMTP_PASS" \
+	-m  "$BODY"
+        done
+
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] pgagent started, and notifications sent to DBA team." >> $LOG_FILE
+    fi
+
+    # Check pgagent job run status now
+   current_hour=$(date +%H)
+   if [ "$current_hour" == "05" ] && [ "$JOB_STATUS_EMAIL_SENT" == false ]; then
+    JOB_STATUS=$(psql -h 172.20.190.6 -p 5444 -U fo_om -d apbo -c "SELECT j.jobname as job_name, l.jlgstatus as job_status,l.jlgstart as job_date
+	FROM pgagent.pga_job j
+	JOIN pgagent.pga_joblog l ON j.jobid = l.jlgjobid
+	and jlgstatus != 's'
+	and l.jlgstart > trunc(sysdate-1)
+	order by l.jlgstart desc;")
+
+    # Send email notification for job status
+    SUBJECT="PGAgent Job Status Alert"
+    JOB_BODY="<html><body><p>PGAgent job status check:</p><pre>$JOB_STATUS</pre></body></html>"
+
+    for recipient in "${TO[@]}"; do
+
+        /bin/sendemail \
+        -f "$FROM" \
+        -u "$SUBJECT" \
+        -t "$recipient" \
+        -s "${SMTP_HOST}:${SMTP_PORT}" \
+        -o tls=yes \
+        -xu "$SMTP_USER" \
+        -xp "$SMTP_PASS" \
+        -m  "$JOB_BODY"
+
+    done
+
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] PGAgent job status checked and notification sent." >> $LOG_FILE
+        
+    # Set the flag to true to indicate that the email has been sent
+    JOB_STATUS_EMAIL_SENT=true
+  fi
+
+  if [ "$current_hour" == "23" ]; then
+        JOB_STATUS_EMAIL_SENT=false
+  fi
+    # Sleep for 1 minute before checking again
+    sleep 60
+done
